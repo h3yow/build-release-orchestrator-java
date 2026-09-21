@@ -28,7 +28,7 @@ public class ReleaseService {
     }
 
     @PostConstruct
-    void wireCurrentVersionProvider() {
+    public void wireCurrentVersionProvider() {
         // 供制品淘汰策略保护当前发布版本
         artifactService.setCurrentVersionProvider(this::currentVersion);
     }

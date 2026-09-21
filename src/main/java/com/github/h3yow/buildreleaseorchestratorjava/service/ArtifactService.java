@@ -99,7 +99,7 @@ public class ArtifactService {
         log.info("[artifact] 注册制品: pipeline={}, version={}, checksum={}, source={}",
                 pipelineId, version, checksum, source);
         try {
-            evictIfNeeded(pipelineId, byVersion);
+            evictIfNeeded(pipelineId, byVersion, version);
         } catch (LimitExceededException e) {
             // 回滚本次注册，避免半更新状态
             byVersion.remove(version);
@@ -108,13 +108,14 @@ public class ArtifactService {
         return artifact;
     }
 
-    /** 保留量淘汰：淘汰最旧的非当前发布制品；无可淘汰则拒绝。 */
-    private void evictIfNeeded(String pipelineId, Map<String, Artifact> byVersion) {
+    /** 保留量淘汰：淘汰最旧的非当前发布、非本次新注册制品；无可淘汰则拒绝。 */
+    private void evictIfNeeded(String pipelineId, Map<String, Artifact> byVersion, String newVersion) {
         int max = properties.getMaxArtifactsPerPipeline();
         while (byVersion.size() > max) {
             String currentVersion = currentVersionProvider.apply(pipelineId);
             Artifact oldest = byVersion.values().stream()
                     .filter(a -> !a.getVersion().equals(currentVersion))
+                    .filter(a -> !a.getVersion().equals(newVersion))
                     .min(Comparator.comparing(Artifact::getCreatedAt))
                     .orElse(null);
             if (oldest == null) {
@@ -175,7 +176,7 @@ public class ArtifactService {
         }
     }
 
-    static String sha256(String content) {
+    public static String sha256(String content) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(content.getBytes(StandardCharsets.UTF_8));
