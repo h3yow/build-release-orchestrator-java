@@ -1,6 +1,7 @@
 package com.github.h3yow.buildreleaseorchestratorjava.web;
 
 import java.util.List;
+import java.util.Map;
 
 import com.github.h3yow.buildreleaseorchestratorjava.domain.Artifact;
 import com.github.h3yow.buildreleaseorchestratorjava.service.ArtifactService;
@@ -35,25 +36,22 @@ public class ArtifactController {
 
     @GetMapping("/artifacts")
     public List<Artifact> list(@RequestParam String pipelineId) {
-        // TODO: 实现
-        return null;
+        return artifactService.list(pipelineId);
     }
 
     @PostMapping("/pipelines/{pipelineId}/rollback")
     public ReleaseService.ReleaseState rollback(@PathVariable String pipelineId, @RequestBody RollbackRequest request) {
-        // TODO: 实现
-        return null;
+        return releaseService.rollback(pipelineId, request.getTargetVersion());
     }
 
     @GetMapping("/pipelines/{pipelineId}/release")
-    public String currentRelease(@PathVariable String pipelineId) {
-        // TODO: 实现
-        return null;
+    public Map<String, String> currentRelease(@PathVariable String pipelineId) {
+        return Map.of("pipelineId", pipelineId,
+                "currentVersion", String.valueOf(releaseService.currentVersion(pipelineId)));
     }
 
     @GetMapping("/cache/stats")
     public BuildCacheService.CacheStats cacheStats() {
-        // TODO: 实现
-        return null;
+        return buildCacheService.stats();
     }
 }

@@ -28,25 +28,23 @@ public class PipelineController {
 
     @PostMapping("/pipelines/{pipelineId}/trigger")
     public TriggerResponse trigger(@PathVariable String pipelineId, @RequestBody TriggerRequest request) {
-        // TODO: 实现
-        return null;
+        PipelineService.TriggerResult result =
+                pipelineService.trigger(pipelineId, request.getIdempotencyKey(), request.getFailAtStage());
+        return new TriggerResponse(result.getRun(), result.isDuplicated());
     }
 
     @PostMapping("/runs/{runId}/retry")
     public PipelineRun retry(@PathVariable String runId) {
-        // TODO: 实现
-        return null;
+        return pipelineService.retry(runId);
     }
 
     @GetMapping("/runs/{runId}")
     public PipelineRun getRun(@PathVariable String runId) {
-        // TODO: 实现
-        return null;
+        return pipelineService.getRun(runId);
     }
 
     @GetMapping("/runs")
     public List<PipelineRun> listRuns() {
-        // TODO: 实现
-        return null;
+        return pipelineService.listRuns();
     }
 }

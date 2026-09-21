@@ -15,6 +15,9 @@ public class PipelineRun {
     private final Instant createdAt;
     private volatile String producedVersion;
     private volatile String failureReason;
+    /** 构建缓存命中情况（RESOLVE_CACHE 阶段的判定结果），供查询 */
+    private volatile Boolean cacheHit;
+    private volatile String cacheReason;
 
     public PipelineRun(String runId, String pipelineId, String idempotencyKey, List<StageResult> stages) {
         this.runId = runId;
@@ -36,4 +39,8 @@ public class PipelineRun {
     public void setProducedVersion(String producedVersion) { this.producedVersion = producedVersion; }
     public String getFailureReason() { return failureReason; }
     public void setFailureReason(String failureReason) { this.failureReason = failureReason; }
+    public Boolean getCacheHit() { return cacheHit; }
+    public void setCacheHit(Boolean cacheHit) { this.cacheHit = cacheHit; }
+    public String getCacheReason() { return cacheReason; }
+    public void setCacheReason(String cacheReason) { this.cacheReason = cacheReason; }
 }
