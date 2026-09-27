@@ -35,16 +35,22 @@ mvn spring-boot:run  # 本地启动，默认端口 8080
 
 ## 版本规则
 
-- 版本格式为 `1.0.N`，每条流水线独立计数，单调递增、唯一。
+- 自动版本格式为 `1.0.N`，每条流水线独立计数，沿“自动版本水位”单调递增、永不复用、唯一。
 - 版本分配与制品落库在同一临界区完成（`ArtifactService.registerNext`），
   失败不消耗版本号，因此不会出现版本跳变或半更新状态。
-- 触发可携带 `requestedVersion` 指定期望产出的版本（如 `2.0.0`）：
-  - 指定版本不消耗自动版本计数器（`1.0.N` 序列不受影响）；
+- 触发可携带 `requestedVersion` 指定期望产出的版本（如 `2.0.0`、`1.0.3`）：
+  - **指定版本与自动版本的衔接**：指定版本注册成功后，若它落在自动号段 `1.0.N`，
+    自动版本水位会单调推进到 `N`（`2.0.0` 这类非自动号段不影响水位）。
+    此后普通触发（不带 `requestedVersion`）分配的永远是水位之后、当前未被占用的版本，
+    因此“先指定 `1.0.1` 再普通触发”会正常拿到 `1.0.2` 并持续推进，不会因为撞号而失败，
+    更不会出现一次冲突后流水线永久发不出版本的情况。普通触发沿水位单调向后，不回填历史空洞。
   - 该版本已被占用时按冲突拒绝（HTTP 409），并区分原因：
     - `VERSION_ALREADY_EXISTS`：同名版本已存在且内容/校验和一致；
     - `CHECKSUM_MISMATCH`：同名版本已存在但内容/校验和不一致；
-  - 被拒绝时不消耗版本号、不覆盖已有制品、不移动当前发布指向，
-    运行标记为 `FAILED` 且失败原因可查询，不留半更新状态。
+  - 被拒绝时不消耗版本号、不推进自动版本水位、不覆盖已有制品、不移动当前发布指向，
+    因此也不改变后续普通触发可用的版本号；运行标记为 `FAILED` 且失败原因可查询，不留半更新状态。
+- 连续触发、并发触发以及“先指定版本再普通触发”混合使用时，版本号在同一流水线锁下分配，
+  全局唯一；任何一次指定版本被拒绝都不会打乱后续版本推进。
 - 同名版本重复注册一律拒绝，并区分原因：
   - `VERSION_ALREADY_EXISTS`：版本已存在且校验和一致；
   - `CHECKSUM_MISMATCH`：版本已存在但校验和不一致（原有制品不被覆盖）。
@@ -110,8 +116,10 @@ mvn spring-boot:run  # 本地启动，默认端口 8080
 ## 本地验证方法
 
 1. `mvn test`：覆盖并发与重复触发、失败重试、缓存损坏、版本冲突、回滚与上限场景，
-   以及新增的构建输入复用/重建判定、FIFO/LRU 淘汰差异、非法淘汰配置拒绝、
-   指定版本冲突拒绝后版本号与发布指向保持不变。
+   以及构建输入复用/重建判定、FIFO/LRU 淘汰差异、非法淘汰配置拒绝、
+   指定版本冲突拒绝后版本号与发布指向保持不变；
+   `MixedVersionTriggerTest` 额外稳定覆盖“指定版本成功后再普通触发仍能正常出版本”
+   “指定版本（两种冲突原因）被拒绝后再普通触发仍单调推进”“连续/并发混合触发版本号全局唯一”。
    每个用例打印输入与判定依据（`[test] 输入/判定依据`），断言结论可区分。
 2. 手动验证：`mvn spring-boot:run` 后：
    ```bash
@@ -149,18 +157,25 @@ mvn spring-boot:run  # 本地启动，默认端口 8080
    # 查询缓存条目数/淘汰次数/生效策略
    curl localhost:8080/api/cache/stats
    ```
-4. 指定版本与冲突：
+4. 指定版本与冲突、以及与普通自动版本的衔接：
    ```bash
-   # 指定版本触发
-   curl -X POST localhost:8080/api/pipelines/demo/trigger \
+   # 指定一个落在自动号段的版本触发，产出 1.0.1
+   curl -X POST localhost:8080/api/pipelines/mix/trigger \
      -H 'Content-Type: application/json' \
-     -d '{"idempotencyKey":"v1","requestedVersion":"2.0.0"}'
+     -d '{"idempotencyKey":"v1","requestedVersion":"1.0.1"}'
    # 同版本同内容：409 VERSION_ALREADY_EXISTS；换 sourceContent 则为 409 CHECKSUM_MISMATCH
-   curl -X POST localhost:8080/api/pipelines/demo/trigger \
+   curl -i -X POST localhost:8080/api/pipelines/mix/trigger \
      -H 'Content-Type: application/json' \
-     -d '{"idempotencyKey":"v2","requestedVersion":"2.0.0"}'
-   # 发布指向保持 2.0.0 不变
-   curl localhost:8080/api/pipelines/demo/release
+     -d '{"idempotencyKey":"v2","requestedVersion":"1.0.1"}'
+   # 关键衔接：被拒绝后再走普通触发（不带 requestedVersion），应成功拿到 1.0.2，
+   # 而不会再次撞号；之后每次普通触发继续得到 1.0.3、1.0.4 …
+   curl -X POST localhost:8080/api/pipelines/mix/trigger \
+     -H 'Content-Type: application/json' -d '{"idempotencyKey":"v3"}'
+   curl -X POST localhost:8080/api/pipelines/mix/trigger \
+     -H 'Content-Type: application/json' -d '{"idempotencyKey":"v4"}'
+   # 发布指向随成功的普通触发推进到 1.0.3；被拒绝的那次不会移动它
+   curl localhost:8080/api/pipelines/mix/release
+   # 指定非自动号段（如 2.0.0）不影响 1.0.N 水位：下一次普通触发仍是后续的 1.0.N
    ```
 5. 淘汰策略切换：在 `application.properties` 设置
    `orchestrator.cache-eviction-policy=FIFO`（或 `LRU`）后重启即可生效；

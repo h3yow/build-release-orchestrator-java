@@ -49,37 +49,50 @@ public class ArtifactService {
     }
 
     /**
-     * 预览下一个版本号（不消费计数器）。
+     * 预览下一个版本号（不消费版本号）：从自动版本水位之后寻找首个未被占用的 1.0.N，
+     * 与 {@link #registerNext} 的实际分配保持一致。
      */
     public String nextVersion(String pipelineId) {
+        Map<String, Artifact> byVersion = artifacts.get(pipelineId);
         int next = versionCounters.computeIfAbsent(pipelineId, k -> new AtomicInteger(0)).get() + 1;
+        while (byVersion != null && byVersion.containsKey("1.0." + next)) {
+            next++;
+        }
         return "1.0." + next;
     }
 
     /**
      * 分配下一个版本并原子注册制品：版本推进与制品落库在同一临界区，避免版本跳变与半更新。
+     * 自动版本水位会在每次成功注册后单调推进；若水位指向的 1.0.N 已被“指定版本”占用
+     * （或因历史原因已登记），则继续向后寻找首个未占用号，保证普通触发永不与指定版本撞号。
      */
     public Artifact registerNext(String pipelineId, String content, String source) {
         synchronized (lockOf(pipelineId)) {
-            String version = nextVersion(pipelineId);
-            Artifact artifact = doRegister(pipelineId, version, content, source);
-            versionCounters.get(pipelineId).incrementAndGet();
-            return artifact;
+            Map<String, Artifact> byVersion = artifacts.computeIfAbsent(pipelineId, k -> new ConcurrentHashMap<>());
+            AtomicInteger counter = versionCounters.computeIfAbsent(pipelineId, k -> new AtomicInteger(0));
+            String version;
+            do {
+                version = "1.0." + (counter.get() + 1);
+            } while (byVersion.containsKey(version));
+            return doRegister(pipelineId, byVersion, version, content, source);
         }
     }
 
     /**
      * 注册指定版本制品：同名版本冲突必须拒绝并区分原因；超保留量按策略淘汰。
+     * 注册成功后，若版本落在自动号段 1.0.N，则把自动版本水位推进到 N（单调、不回退），
+     * 从而保证后续普通触发拿到的版本不会与该指定版本冲突；冲突拒绝时不推进水位。
      */
     public Artifact register(String pipelineId, String version, String content, String source) {
         synchronized (lockOf(pipelineId)) {
-            return doRegister(pipelineId, version, content, source);
+            Map<String, Artifact> byVersion = artifacts.computeIfAbsent(pipelineId, k -> new ConcurrentHashMap<>());
+            return doRegister(pipelineId, byVersion, version, content, source);
         }
     }
 
-    private Artifact doRegister(String pipelineId, String version, String content, String source) {
+    private Artifact doRegister(String pipelineId, Map<String, Artifact> byVersion, String version,
+                                String content, String source) {
         String checksum = sha256(content);
-        Map<String, Artifact> byVersion = artifacts.computeIfAbsent(pipelineId, k -> new ConcurrentHashMap<>());
         Artifact existing = byVersion.get(version);
         if (existing != null) {
             if (existing.getChecksum().equals(checksum)) {
@@ -105,7 +118,38 @@ public class ArtifactService {
             byVersion.remove(version);
             throw e;
         }
+        // 注册（含淘汰）成功后再推进自动版本水位：冲突拒绝或超限回滚都不会推进水位。
+        // 仅自动号段 1.0.N 参与水位，单调不回退，保证后续普通触发永不复用该版本号。
+        advanceAutoVersionWatermark(pipelineId, version);
         return artifact;
+    }
+
+    /** 若版本属于自动号段 1.0.N，把该流水线的自动版本水位单调推进到 N。 */
+    private void advanceAutoVersionWatermark(String pipelineId, String version) {
+        String prefix = "1.0.";
+        if (version == null || !version.startsWith(prefix)) {
+            return;
+        }
+        String suffix = version.substring(prefix.length());
+        if (suffix.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < suffix.length(); i++) {
+            if (!Character.isDigit(suffix.charAt(i))) {
+                return;
+            }
+        }
+        int n;
+        try {
+            n = Integer.parseInt(suffix);
+        } catch (NumberFormatException e) {
+            return;
+        }
+        if (n <= 0) {
+            return;
+        }
+        versionCounters.computeIfAbsent(pipelineId, k -> new AtomicInteger(0))
+                .accumulateAndGet(n, Math::max);
     }
 
     /** 保留量淘汰：淘汰最旧的非当前发布、非本次新注册制品；无可淘汰则拒绝。 */
