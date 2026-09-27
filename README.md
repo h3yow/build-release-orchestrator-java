@@ -39,12 +39,17 @@ mvn spring-boot:run  # 本地启动，默认端口 8080
 - 版本分配与制品落库在同一临界区完成（`ArtifactService.registerNext`），
   失败不消耗版本号，因此不会出现版本跳变或半更新状态。
 - 触发可携带 `requestedVersion` 指定期望产出的版本（如 `2.0.0`）：
-  - 指定版本不消耗自动版本计数器（`1.0.N` 序列不受影响）；
+  - 指定版本落在自动号段之外（如 `2.0.0`）时，不消耗自动版本计数器，
+    后续普通触发仍从 `1.0.1` 起推进；
+  - 指定版本落在自动号段之内（如 `1.0.3`）时，注册成功后自动计数器推进到
+    不小于该序号，后续普通触发自动跳过已占用号码（如上例下一次普通触发产出
+    `1.0.4`），保证指定版本与普通触发混用时版本号不重复分配、流水线可继续发布；
   - 该版本已被占用时按冲突拒绝（HTTP 409），并区分原因：
     - `VERSION_ALREADY_EXISTS`：同名版本已存在且内容/校验和一致；
     - `CHECKSUM_MISMATCH`：同名版本已存在但内容/校验和不一致；
   - 被拒绝时不消耗版本号、不覆盖已有制品、不移动当前发布指向，
-    运行标记为 `FAILED` 且失败原因可查询，不留半更新状态。
+    也不改变后续普通触发可用的版本号；运行标记为 `FAILED` 且失败原因可查询，
+    不留半更新状态。
 - 同名版本重复注册一律拒绝，并区分原因：
   - `VERSION_ALREADY_EXISTS`：版本已存在且校验和一致；
   - `CHECKSUM_MISMATCH`：版本已存在但校验和不一致（原有制品不被覆盖）。
@@ -111,7 +116,10 @@ mvn spring-boot:run  # 本地启动，默认端口 8080
 
 1. `mvn test`：覆盖并发与重复触发、失败重试、缓存损坏、版本冲突、回滚与上限场景，
    以及新增的构建输入复用/重建判定、FIFO/LRU 淘汰差异、非法淘汰配置拒绝、
-   指定版本冲突拒绝后版本号与发布指向保持不变。
+   指定版本冲突拒绝后版本号与发布指向保持不变、
+   指定版本与普通触发混用时版本衔接（`MixedVersionAllocationTest`：
+   指定版本成功后普通触发继续可用、拒绝后普通触发不受影响、
+   两种拒绝原因可区分、混合并发下版本号唯一且持续推进）。
    每个用例打印输入与判定依据（`[test] 输入/判定依据`），断言结论可区分。
 2. 手动验证：`mvn spring-boot:run` 后：
    ```bash
@@ -162,7 +170,23 @@ mvn spring-boot:run  # 本地启动，默认端口 8080
    # 发布指向保持 2.0.0 不变
    curl localhost:8080/api/pipelines/demo/release
    ```
-5. 淘汰策略切换：在 `application.properties` 设置
+5. 指定版本与普通触发衔接：
+   ```bash
+   # 指定自动号段内的版本 1.0.1 成功发布
+   curl -X POST localhost:8080/api/pipelines/mix/trigger \
+     -H 'Content-Type: application/json' \
+     -d '{"idempotencyKey":"m1","requestedVersion":"1.0.1"}'
+   # 普通触发自动跳过已占用号码，产出 1.0.2 而不是冲突失败
+   curl -X POST localhost:8080/api/pipelines/mix/trigger \
+     -H 'Content-Type: application/json' -d '{"idempotencyKey":"m2"}'
+   # 再次指定 1.0.1 被拒绝（409）后，普通触发仍正常推进到 1.0.3
+   curl -X POST localhost:8080/api/pipelines/mix/trigger \
+     -H 'Content-Type: application/json' \
+     -d '{"idempotencyKey":"m3","requestedVersion":"1.0.1","sourceContent":"other"}'
+   curl -X POST localhost:8080/api/pipelines/mix/trigger \
+     -H 'Content-Type: application/json' -d '{"idempotencyKey":"m4"}'
+   ```
+6. 淘汰策略切换：在 `application.properties` 设置
    `orchestrator.cache-eviction-policy=FIFO`（或 `LRU`）后重启即可生效；
    设置为其他值时应用启动失败并提示 `INVALID_EVICTION_POLICY`。
 6. 日志中可观察关键输入与判定依据：幂等键、构建输入、版本、校验和、缓存命中原因、

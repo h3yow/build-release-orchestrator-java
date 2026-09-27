@@ -49,11 +49,23 @@ public class ArtifactService {
     }
 
     /**
-     * 预览下一个版本号（不消费计数器）。
+     * 预览下一个可用自动版本号（不消费计数器）：跳过已被指定版本占用的号段。
      */
     public String nextVersion(String pipelineId) {
-        int next = versionCounters.computeIfAbsent(pipelineId, k -> new AtomicInteger(0)).get() + 1;
-        return "1.0." + next;
+        synchronized (lockOf(pipelineId)) {
+            return peekNextVersion(pipelineId);
+        }
+    }
+
+    /** 在流水线锁内计算下一个未被占用的 1.0.N 版本。 */
+    private String peekNextVersion(String pipelineId) {
+        Map<String, Artifact> byVersion = artifacts.get(pipelineId);
+        int n = versionCounters.computeIfAbsent(pipelineId, k -> new AtomicInteger(0)).get();
+        String candidate;
+        do {
+            candidate = "1.0." + (++n);
+        } while (byVersion != null && byVersion.containsKey(candidate));
+        return candidate;
     }
 
     /**
@@ -61,10 +73,8 @@ public class ArtifactService {
      */
     public Artifact registerNext(String pipelineId, String content, String source) {
         synchronized (lockOf(pipelineId)) {
-            String version = nextVersion(pipelineId);
-            Artifact artifact = doRegister(pipelineId, version, content, source);
-            versionCounters.get(pipelineId).incrementAndGet();
-            return artifact;
+            String version = peekNextVersion(pipelineId);
+            return doRegister(pipelineId, version, content, source);
         }
     }
 
@@ -105,7 +115,29 @@ public class ArtifactService {
             byVersion.remove(version);
             throw e;
         }
+        syncCounterWith(pipelineId, version);
         return artifact;
+    }
+
+    /**
+     * 注册成功后，若版本落在自动号段 1.0.N 内，则将计数器推进到不小于 N，
+     * 保证后续普通触发不会再次分配到已被指定版本占用的号码。
+     * 被拒绝的注册不会走到这里，因此拒绝不会改变后续可用版本号。
+     */
+    private void syncCounterWith(String pipelineId, String version) {
+        String prefix = "1.0.";
+        if (!version.startsWith(prefix)) {
+            return;
+        }
+        final int n;
+        try {
+            n = Integer.parseInt(version.substring(prefix.length()));
+        } catch (NumberFormatException e) {
+            // 非数字后缀的自定义版本不参与自动号段
+            return;
+        }
+        versionCounters.computeIfAbsent(pipelineId, k -> new AtomicInteger(0))
+                .accumulateAndGet(n, Math::max);
     }
 
     /** 保留量淘汰：淘汰最旧的非当前发布、非本次新注册制品；无可淘汰则拒绝。 */
