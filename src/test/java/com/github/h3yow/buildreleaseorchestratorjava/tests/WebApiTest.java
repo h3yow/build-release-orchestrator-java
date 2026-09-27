@@ -93,4 +93,47 @@ class WebApiTest {
         System.out.printf("[test] 判定依据: 回滚不存在版本 -> code=%s%n", err.get("code").asText());
         assertEquals("ARTIFACT_NOT_FOUND", err.get("code").asText());
     }
+
+    @Test
+    void requestedVersionConflictViaRestIsRejectedWithDistinctCodes() throws Exception {
+        String pipelineId = "p-web-version";
+        System.out.printf("[test] 输入: POST /api/pipelines/%s/trigger 两次指定 requestedVersion=2.0.0，第二次内容不同%n",
+                pipelineId);
+
+        // 1. 指定版本首次触发成功
+        MvcResult ok = mockMvc.perform(post("/api/pipelines/{p}/trigger", pipelineId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"idempotencyKey\":\"wv-1\",\"sourceRef\":\"git://repo#main\","
+                                + "\"sourceContent\":\"content-A\",\"requestedVersion\":\"2.0.0\"}"))
+                .andExpect(status().isOk()).andReturn();
+        assertEquals("2.0.0", om.readTree(ok.getResponse().getContentAsString())
+                .get("run").get("producedVersion").asText());
+
+        // 2. 相同输入指定同一版本：409 VERSION_ALREADY_EXISTS
+        MvcResult same = mockMvc.perform(post("/api/pipelines/{p}/trigger", pipelineId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"idempotencyKey\":\"wv-2\",\"sourceRef\":\"git://repo#main\","
+                                + "\"sourceContent\":\"content-A\",\"requestedVersion\":\"2.0.0\"}"))
+                .andExpect(status().isConflict()).andReturn();
+        JsonNode sameErr = om.readTree(same.getResponse().getContentAsString());
+        System.out.printf("[test] 判定依据: 同内容冲突 -> code=%s%n", sameErr.get("code").asText());
+        assertEquals("VERSION_ALREADY_EXISTS", sameErr.get("code").asText());
+
+        // 3. 不同内容指定同一版本：409 CHECKSUM_MISMATCH
+        MvcResult diff = mockMvc.perform(post("/api/pipelines/{p}/trigger", pipelineId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"idempotencyKey\":\"wv-3\",\"sourceRef\":\"git://repo#main\","
+                                + "\"sourceContent\":\"content-B\",\"requestedVersion\":\"2.0.0\"}"))
+                .andExpect(status().isConflict()).andReturn();
+        JsonNode diffErr = om.readTree(diff.getResponse().getContentAsString());
+        System.out.printf("[test] 判定依据: 不同内容冲突 -> code=%s%n", diffErr.get("code").asText());
+        assertEquals("CHECKSUM_MISMATCH", diffErr.get("code").asText());
+
+        // 4. 发布指向保持 2.0.0，未被拒绝的请求移动
+        MvcResult rel = mockMvc.perform(get("/api/pipelines/{p}/release", pipelineId))
+                .andExpect(status().isOk()).andReturn();
+        JsonNode release = om.readTree(rel.getResponse().getContentAsString());
+        System.out.printf("[test] 判定依据: currentVersion=%s%n", release.get("currentVersion").asText());
+        assertEquals("2.0.0", release.get("currentVersion").asText(), "冲突拒绝后发布指向不得移动");
+    }
 }
