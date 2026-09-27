@@ -15,7 +15,7 @@ public class OrchestratorProperties {
     private int maxArtifactsPerPipeline = 10;
     /** 构建缓存最大条目数，超限按 evictionPolicy 淘汰 */
     private int cacheCapacity = 50;
-    /** 缓存淘汰策略，目前支持 LRU */
+    /** 缓存淘汰策略：LRU(最近最少使用) 或 FIFO(先进先出)，无法识别时启动即失败 */
     private String cacheEvictionPolicy = "LRU";
 
     public int getMaxRuns() { return maxRuns; }

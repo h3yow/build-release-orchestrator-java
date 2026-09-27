@@ -18,14 +18,27 @@ public class PipelineRun {
     /** 构建缓存命中情况（RESOLVE_CACHE 阶段的判定结果），供查询 */
     private volatile Boolean cacheHit;
     private volatile String cacheReason;
+    /** 本次构建输入：源码标识与源码内容（可选，缺省按流水线派生） */
+    private final String sourceRef;
+    private final String sourceContent;
+    /** 本次期望产出的版本（可选，缺省自动分配下一个版本） */
+    private final String requestedVersion;
 
     public PipelineRun(String runId, String pipelineId, String idempotencyKey, List<StageResult> stages) {
+        this(runId, pipelineId, idempotencyKey, stages, null, null, null);
+    }
+
+    public PipelineRun(String runId, String pipelineId, String idempotencyKey, List<StageResult> stages,
+                       String sourceRef, String sourceContent, String requestedVersion) {
         this.runId = runId;
         this.pipelineId = pipelineId;
         this.idempotencyKey = idempotencyKey;
         this.stages = stages;
         this.status = RunStatus.RUNNING;
         this.createdAt = Instant.now();
+        this.sourceRef = sourceRef;
+        this.sourceContent = sourceContent;
+        this.requestedVersion = requestedVersion;
     }
 
     public String getRunId() { return runId; }
@@ -43,4 +56,7 @@ public class PipelineRun {
     public void setCacheHit(Boolean cacheHit) { this.cacheHit = cacheHit; }
     public String getCacheReason() { return cacheReason; }
     public void setCacheReason(String cacheReason) { this.cacheReason = cacheReason; }
+    public String getSourceRef() { return sourceRef; }
+    public String getSourceContent() { return sourceContent; }
+    public String getRequestedVersion() { return requestedVersion; }
 }

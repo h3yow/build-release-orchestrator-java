@@ -18,6 +18,7 @@ import com.github.h3yow.buildreleaseorchestratorjava.domain.StageStatus;
 import com.github.h3yow.buildreleaseorchestratorjava.exception.LimitExceededException;
 import com.github.h3yow.buildreleaseorchestratorjava.exception.OrchestratorException;
 import com.github.h3yow.buildreleaseorchestratorjava.exception.RunNotFoundException;
+import com.github.h3yow.buildreleaseorchestratorjava.exception.VersionConflictException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -73,14 +74,32 @@ public class PipelineService {
      * @param failAtStage 测试用一次性故障注入点，为 null 表示不注入
      */
     public TriggerResult trigger(String pipelineId, String idempotencyKey, String failAtStage) {
+        return trigger(pipelineId, idempotencyKey, failAtStage, null, null, null);
+    }
+
+    /**
+     * 触发流水线并携带本次构建输入：sourceRef(源码标识) 与 sourceContent(源码内容)
+     * 共同构成构建身份，决定缓存能否复用与最终制品内容。
+     */
+    public TriggerResult trigger(String pipelineId, String idempotencyKey, String failAtStage,
+                                 String sourceRef, String sourceContent) {
+        return trigger(pipelineId, idempotencyKey, failAtStage, sourceRef, sourceContent, null);
+    }
+
+    /**
+     * 触发流水线并指定期望产出版本：requestedVersion 已被占用时按冲突拒绝
+     * （区分内容一致/校验和不一致），不消耗版本号、不覆盖制品、不移动发布指针。
+     */
+    public TriggerResult trigger(String pipelineId, String idempotencyKey, String failAtStage,
+                                 String sourceRef, String sourceContent, String requestedVersion) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new OrchestratorException("IDEMPOTENCY_KEY_REQUIRED", "幂等键不能为空: pipeline=" + pipelineId);
         }
-        log.info("[pipeline] 触发请求: pipeline={}, idempotencyKey={}, failAtStage={}",
-                pipelineId, idempotencyKey, failAtStage);
+        log.info("[pipeline] 触发请求: pipeline={}, idempotencyKey={}, failAtStage={}, sourceRef={}, requestedVersion={}",
+                pipelineId, idempotencyKey, failAtStage, sourceRef, requestedVersion);
         IdempotencyService.IdempotentResult<PipelineRun> result = idempotencyService.execute(
                 "trigger:" + pipelineId, idempotencyKey,
-                () -> startNewRun(pipelineId, idempotencyKey, failAtStage));
+                () -> startNewRun(pipelineId, idempotencyKey, failAtStage, sourceRef, sourceContent, requestedVersion));
         if (result.isDuplicated()) {
             log.info("[pipeline] 重复触发: pipeline={}, idempotencyKey={}, 返回首次运行 runId={}",
                     pipelineId, idempotencyKey, result.getValue().getRunId());
@@ -88,13 +107,15 @@ public class PipelineService {
         return new TriggerResult(result.getValue(), result.isDuplicated());
     }
 
-    private PipelineRun startNewRun(String pipelineId, String idempotencyKey, String failAtStage) {
+    private PipelineRun startNewRun(String pipelineId, String idempotencyKey, String failAtStage,
+                                    String sourceRef, String sourceContent, String requestedVersion) {
         String runId = UUID.randomUUID().toString();
         List<StageResult> stages = new ArrayList<>();
         for (String name : STAGE_ORDER) {
             stages.add(new StageResult(name));
         }
-        PipelineRun run = new PipelineRun(runId, pipelineId, idempotencyKey, stages);
+        PipelineRun run = new PipelineRun(runId, pipelineId, idempotencyKey, stages,
+                sourceRef, sourceContent, requestedVersion);
         if (failAtStage != null && !failAtStage.isBlank()) {
             failAtStageByRunId.put(runId, failAtStage);
         }
@@ -143,19 +164,29 @@ public class PipelineService {
     private void execute(PipelineRun run) {
         Object pipelineLock = pipelineLocks.computeIfAbsent(run.getPipelineId(), k -> new Object());
         synchronized (pipelineLock) {
-            for (StageResult stage : run.getStages()) {
-                if (stage.getStatus() == StageStatus.SUCCESS) {
-                    log.info("[pipeline] 跳过已成功阶段: runId={}, stage={}, 原耗时={}ms",
-                            run.getRunId(), stage.getName(), stage.getDurationMillis());
-                    continue;
+            try {
+                for (StageResult stage : run.getStages()) {
+                    if (stage.getStatus() == StageStatus.SUCCESS) {
+                        log.info("[pipeline] 跳过已成功阶段: runId={}, stage={}, 原耗时={}ms",
+                                run.getRunId(), stage.getName(), stage.getDurationMillis());
+                        continue;
+                    }
+                    if (!runStage(run, stage)) {
+                        run.setStatus(RunStatus.FAILED);
+                        run.setFailureReason("阶段失败: " + stage.getName() + ", 详情: " + stage.getDetail());
+                        log.warn("[pipeline] 运行失败: runId={}, stage={}, reason={}",
+                                run.getRunId(), stage.getName(), stage.getDetail());
+                        return;
+                    }
                 }
-                if (!runStage(run, stage)) {
-                    run.setStatus(RunStatus.FAILED);
-                    run.setFailureReason("阶段失败: " + stage.getName() + ", 详情: " + stage.getDetail());
-                    log.warn("[pipeline] 运行失败: runId={}, stage={}, reason={}",
-                            run.getRunId(), stage.getName(), stage.getDetail());
-                    return;
-                }
+            } catch (VersionConflictException e) {
+                // 版本冲突：标记运行失败后向外抛出，由 Web 层映射为 409；
+                // 版本号未消耗、制品未覆盖、发布指针未移动，无半更新状态
+                run.setStatus(RunStatus.FAILED);
+                run.setFailureReason("版本冲突被拒绝(" + e.getCode() + "): " + e.getMessage());
+                log.warn("[pipeline] 运行因版本冲突被拒绝: runId={}, code={}, reason={}",
+                        run.getRunId(), e.getCode(), e.getMessage());
+                throw e;
             }
             run.setStatus(RunStatus.SUCCESS);
             log.info("[pipeline] 运行成功: runId={}, pipeline={}, version={}",
@@ -188,6 +219,11 @@ public class PipelineService {
             stage.setDetail(detail);
             stage.setStatus(StageStatus.SUCCESS);
             return true;
+        } catch (VersionConflictException e) {
+            // 版本冲突必须向外传播（由 execute 标记运行失败后交给 Web 层返回 409）
+            stage.setDetail(e.getMessage());
+            stage.setStatus(StageStatus.FAILED);
+            throw e;
         } catch (Exception e) {
             stage.setDetail(e.getMessage());
             stage.setStatus(StageStatus.FAILED);
@@ -200,17 +236,28 @@ public class PipelineService {
         }
     }
 
-    private String sourceContentOf(String pipelineId) {
-        return "source-of-" + pipelineId;
+    /** 本次运行的源码标识：缺省按流水线派生，保证兼容旧触发方式。 */
+    private String sourceRefOf(PipelineRun run) {
+        return run.getSourceRef() != null ? run.getSourceRef() : "pipeline://" + run.getPipelineId();
+    }
+
+    /** 本次运行的源码内容：缺省按流水线派生。 */
+    private String sourceContentOf(PipelineRun run) {
+        return run.getSourceContent() != null ? run.getSourceContent() : "source-of-" + run.getPipelineId();
+    }
+
+    /** 构建身份指纹：由源码标识与源码内容共同决定，任一变化都不得复用旧构建。 */
+    private String buildFingerprintOf(PipelineRun run) {
+        return ArtifactService.sha256(sourceRefOf(run) + "\n" + sourceContentOf(run));
     }
 
     private String doCheckout(PipelineRun run) {
-        return "拉取源码完成: fingerprint=" + ArtifactService.sha256(sourceContentOf(run.getPipelineId()));
+        return "拉取源码完成: ref=" + sourceRefOf(run) + ", fingerprint=" + buildFingerprintOf(run);
     }
 
     private String doBuild(PipelineRun run) {
         String pipelineId = run.getPipelineId();
-        String fingerprint = ArtifactService.sha256(sourceContentOf(pipelineId));
+        String fingerprint = buildFingerprintOf(run);
         String cacheKey = pipelineId + "::build";
         CacheLookupResult lookup = buildCacheService.lookup(cacheKey, fingerprint);
         run.setCacheHit(lookup.isHit());
@@ -218,16 +265,23 @@ public class PipelineService {
         if (lookup.isHit()) {
             return "缓存命中: checksum=" + lookup.getChecksum();
         }
-        String payload = "compiled:" + sourceContentOf(pipelineId);
+        String payload = "compiled:" + sourceContentOf(run);
         buildCacheService.put(cacheKey, fingerprint, payload);
         return "缓存未命中(" + lookup.getReason() + ")，已重新构建并写入缓存";
     }
 
     private String doPublish(PipelineRun run) {
         String pipelineId = run.getPipelineId();
-        String content = "artifact:compiled:" + sourceContentOf(pipelineId);
+        String content = "artifact:compiled:" + sourceContentOf(run);
         String source = "pipeline://" + pipelineId + "/run/" + run.getRunId();
-        Artifact artifact = artifactService.registerNext(pipelineId, content, source);
+        String requested = run.getRequestedVersion();
+        Artifact artifact;
+        if (requested == null || requested.isBlank()) {
+            artifact = artifactService.registerNext(pipelineId, content, source);
+        } else {
+            // 指定版本：同名冲突在注册处被拒绝并区分原因，版本号不消耗、制品不覆盖
+            artifact = artifactService.register(pipelineId, requested, content, source);
+        }
         releaseService.release(pipelineId, artifact.getVersion());
         run.setProducedVersion(artifact.getVersion());
         return "发布版本 " + artifact.getVersion() + ", checksum=" + artifact.getChecksum();

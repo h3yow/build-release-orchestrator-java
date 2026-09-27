@@ -28,8 +28,9 @@ public class PipelineController {
 
     @PostMapping("/pipelines/{pipelineId}/trigger")
     public TriggerResponse trigger(@PathVariable String pipelineId, @RequestBody TriggerRequest request) {
-        PipelineService.TriggerResult result =
-                pipelineService.trigger(pipelineId, request.getIdempotencyKey(), request.getFailAtStage());
+        PipelineService.TriggerResult result = pipelineService.trigger(pipelineId, request.getIdempotencyKey(),
+                request.getFailAtStage(), request.getSourceRef(), request.getSourceContent(),
+                request.getRequestedVersion());
         return new TriggerResponse(result.getRun(), result.isDuplicated());
     }
 
