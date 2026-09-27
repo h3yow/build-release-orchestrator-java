@@ -18,6 +18,13 @@ public class PipelineRun {
     /** 构建缓存命中情况（RESOLVE_CACHE 阶段的判定结果），供查询 */
     private volatile Boolean cacheHit;
     private volatile String cacheReason;
+    /** 本次触发携带的构建身份：源码标识与内容指纹 */
+    private volatile String sourceRef;
+    private volatile String sourceFingerprint;
+    /** 触发时指定的期望版本（未指定为 null） */
+    private volatile String expectedVersion;
+    /** 是否复用了既有构建结果（true=未重新构建，内容与首次构建一致） */
+    private volatile Boolean reusedBuild;
 
     public PipelineRun(String runId, String pipelineId, String idempotencyKey, List<StageResult> stages) {
         this.runId = runId;
@@ -43,4 +50,12 @@ public class PipelineRun {
     public void setCacheHit(Boolean cacheHit) { this.cacheHit = cacheHit; }
     public String getCacheReason() { return cacheReason; }
     public void setCacheReason(String cacheReason) { this.cacheReason = cacheReason; }
+    public String getSourceRef() { return sourceRef; }
+    public void setSourceRef(String sourceRef) { this.sourceRef = sourceRef; }
+    public String getSourceFingerprint() { return sourceFingerprint; }
+    public void setSourceFingerprint(String sourceFingerprint) { this.sourceFingerprint = sourceFingerprint; }
+    public String getExpectedVersion() { return expectedVersion; }
+    public void setExpectedVersion(String expectedVersion) { this.expectedVersion = expectedVersion; }
+    public Boolean getReusedBuild() { return reusedBuild; }
+    public void setReusedBuild(Boolean reusedBuild) { this.reusedBuild = reusedBuild; }
 }

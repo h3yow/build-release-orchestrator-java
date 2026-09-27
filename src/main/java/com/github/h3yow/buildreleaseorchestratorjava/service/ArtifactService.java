@@ -16,6 +16,7 @@ import com.github.h3yow.buildreleaseorchestratorjava.config.OrchestratorProperti
 import com.github.h3yow.buildreleaseorchestratorjava.domain.Artifact;
 import com.github.h3yow.buildreleaseorchestratorjava.exception.ArtifactNotFoundException;
 import com.github.h3yow.buildreleaseorchestratorjava.exception.LimitExceededException;
+import com.github.h3yow.buildreleaseorchestratorjava.exception.OrchestratorException;
 import com.github.h3yow.buildreleaseorchestratorjava.exception.VersionConflictException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,10 +71,55 @@ public class ArtifactService {
 
     /**
      * 注册指定版本制品：同名版本冲突必须拒绝并区分原因；超保留量按策略淘汰。
+     * 注意：此方法不推进版本计数器（供手动注册使用）。
      */
     public Artifact register(String pipelineId, String version, String content, String source) {
         synchronized (lockOf(pipelineId)) {
             return doRegister(pipelineId, version, content, source);
+        }
+    }
+
+    /**
+     * 注册触发时指定的期望版本：冲突在产生任何副作用前拒绝（不消耗版本号、不覆盖制品）；
+     * 注册成功后把计数器单调推进到该版本序号，保证后续自动版本号不回退、不冲突。
+     */
+    public Artifact registerExpected(String pipelineId, String version, String content, String source) {
+        synchronized (lockOf(pipelineId)) {
+            int expectedSeq = parseVersionSequence(pipelineId, version);
+            Artifact artifact = doRegister(pipelineId, version, content, source);
+            AtomicInteger counter = versionCounters.computeIfAbsent(pipelineId, k -> new AtomicInteger(0));
+            int current;
+            do {
+                current = counter.get();
+                if (current >= expectedSeq) {
+                    break;
+                }
+            } while (!counter.compareAndSet(current, expectedSeq));
+            return artifact;
+        }
+    }
+
+    /** 版本格式必须为 1.0.N（N 为正整数），否则明确拒绝。返回版本序号 N。 */
+    public static int validateVersionSequence(String version) {
+        if (version == null || !version.matches("1\\.0\\.\\d+")) {
+            throw new OrchestratorException("INVALID_VERSION",
+                    "非法版本号(期望格式 1.0.N): version=" + version);
+        }
+        int seq = Integer.parseInt(version.substring("1.0.".length()));
+        if (seq <= 0) {
+            throw new OrchestratorException("INVALID_VERSION",
+                    "版本序号必须为正整数: version=" + version);
+        }
+        return seq;
+    }
+
+    /** 版本格式必须为 1.0.N（N 为正整数），否则明确拒绝。 */
+    private int parseVersionSequence(String pipelineId, String version) {
+        try {
+            return validateVersionSequence(version);
+        } catch (OrchestratorException e) {
+            throw new OrchestratorException(e.getCode(),
+                    e.getMessage() + ", pipeline=" + pipelineId);
         }
     }
 

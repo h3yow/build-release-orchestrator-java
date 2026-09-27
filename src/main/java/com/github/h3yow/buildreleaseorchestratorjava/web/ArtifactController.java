@@ -7,6 +7,7 @@ import com.github.h3yow.buildreleaseorchestratorjava.domain.Artifact;
 import com.github.h3yow.buildreleaseorchestratorjava.service.ArtifactService;
 import com.github.h3yow.buildreleaseorchestratorjava.service.BuildCacheService;
 import com.github.h3yow.buildreleaseorchestratorjava.service.ReleaseService;
+import com.github.h3yow.buildreleaseorchestratorjava.web.dto.CachePolicyRequest;
 import com.github.h3yow.buildreleaseorchestratorjava.web.dto.RollbackRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -53,5 +54,15 @@ public class ArtifactController {
     @GetMapping("/cache/stats")
     public BuildCacheService.CacheStats cacheStats() {
         return buildCacheService.stats();
+    }
+
+    /**
+     * 运行时切换缓存淘汰策略（FIFO/LRU）。无法识别的策略返回 400 + UNKNOWN_EVICTION_POLICY，
+     * 且原策略保持不变。
+     */
+    @PostMapping("/cache/policy")
+    public Map<String, String> setCachePolicy(@RequestBody CachePolicyRequest request) {
+        buildCacheService.setEvictionPolicy(request.getPolicy());
+        return Map.of("policy", buildCacheService.currentPolicyName());
     }
 }

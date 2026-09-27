@@ -2,6 +2,7 @@ package com.github.h3yow.buildreleaseorchestratorjava.web;
 
 import java.util.List;
 
+import com.github.h3yow.buildreleaseorchestratorjava.domain.BuildInput;
 import com.github.h3yow.buildreleaseorchestratorjava.domain.PipelineRun;
 import com.github.h3yow.buildreleaseorchestratorjava.service.PipelineService;
 import com.github.h3yow.buildreleaseorchestratorjava.web.dto.TriggerRequest;
@@ -28,8 +29,11 @@ public class PipelineController {
 
     @PostMapping("/pipelines/{pipelineId}/trigger")
     public TriggerResponse trigger(@PathVariable String pipelineId, @RequestBody TriggerRequest request) {
-        PipelineService.TriggerResult result =
-                pipelineService.trigger(pipelineId, request.getIdempotencyKey(), request.getFailAtStage());
+        BuildInput input = (request.getSourceRef() == null && request.getSourceContent() == null)
+                ? null
+                : new BuildInput(request.getSourceRef(), request.getSourceContent());
+        PipelineService.TriggerResult result = pipelineService.trigger(pipelineId,
+                request.getIdempotencyKey(), request.getFailAtStage(), input, request.getExpectedVersion());
         return new TriggerResponse(result.getRun(), result.isDuplicated());
     }
 
